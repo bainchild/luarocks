@@ -458,4 +458,19 @@ function util.LQ(s)
    return ("%q"):format(s)
 end
 
+-- Recursively copies all data from fromTable into intoTable, merging tables as necessary.
+-- @param intoTable A table to modify
+-- @param fromTable A table to copy from
+-- @return table: Returns intoTable
+function util.merge_table(intoTable, fromTable)
+   for key,value in pairs(fromTable)
+      if type(value) == "table" then
+         if not type(intoTable[key]) == "table" then intoTable[key] = {} end
+         util.merge_table(intoTable[key], value)
+      else
+         intoTable[key] = v
+      end
+   end
+end
+
 return util

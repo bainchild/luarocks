@@ -179,6 +179,9 @@ function fetch.url_to_base_dir(url)
    return (base:gsub("%.([^.]*)$", known_exts):gsub("%.tar", ""))
 end
 
+function fetch.load_local_raw_rockspec(filename)
+end
+
 --- Back-end function that actually loads the local rockspec.
 -- Performs some validation and postprocessing of the rockspec contents.
 -- @param filename string: The local filename of the rockspec file.
@@ -187,22 +190,39 @@ end
 -- @return table or (nil, string): A table representing the rockspec
 -- or nil followed by an error message.
 function fetch.load_local_rockspec(filename, quick)
-   assert(type(filename) == "string")
    filename = fs.absolute_name(filename)
+
    local rockspec, err = persist.load_into_table(filename)
    if not rockspec then
       return nil, "Could not load rockspec file "..filename.." ("..err..")"
    end
+   if rockspec.rockspec_format then
+      if vers.compare_versions(rockspec.rockspec_format, type_rockspec.rockspec_format) then
+         return nil, "Rockspec format "..rockspec.rockspec_format.." for file "..filename.." is not supported, please upgrade LuaRocks."
+      end
+   end
+
+   for _,v in ipairs(".override", ".lock" do
+      local merge_filename = filename .. tag
+      if rockspec and fs.exists(merge_filename) then
+         local rockspec2, err = fetch.load_local_raw_rockspec(filename)
+         if not rockspec2 then
+            return nil, "Rockspec override file "..filename..tag.." exists, but could not be loaded ("..err..")"
+         end
+         if rockspec2.rockspec_format then
+            if vers.compare_versions(rockspec2.rockspec_format, type_rockspec.rockspec_format) then
+               return nil, "Rockspec format "..rockspec.rockspec_format.." for override file "..filename..tag.." is not supported, please upgrade LuaRocks."
+            end
+         end
+         util.merge_table(rockspec, rockspec2)
+      end
+   end
+
    if cfg.branch and (type(rockspec.source) == "table") then
       rockspec.source.branch = cfg.branch
    end
-   local globals = err
 
-   if rockspec.rockspec_format then
-      if vers.compare_versions(rockspec.rockspec_format, type_rockspec.rockspec_format) then
-         return nil, "Rockspec format "..rockspec.rockspec_format.." is not supported, please upgrade LuaRocks."
-      end
-   end
+   local globals = err
 
    if not quick then
       local ok, err = type_rockspec.check(rockspec, globals)
