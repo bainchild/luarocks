@@ -202,7 +202,7 @@ function fetch.load_local_rockspec(filename, quick)
       end
    end
 
-   for _,v in ipairs(".override", ".lock" do
+   for _,tag in ipairs{".override", ".lock"} do
       local merge_filename = filename .. tag
       if rockspec and fs.exists(merge_filename) then
          local rockspec2, err = fetch.load_local_raw_rockspec(filename)
