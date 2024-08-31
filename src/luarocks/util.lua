@@ -491,6 +491,11 @@ function util.split_namespace(ns_name)
    local p1, p2 = ns_name:match("^([^/]+)/([^/]+)$")
    if p1 then
       return p2, p1
+   else
+      p1,p2 = ns_name:match("(https?://.*)/([^/]+)$")
+      if p1 then return p2, p1 end
+      p1,p2 = ns_name:match("(file://.*)/([^/]+)$")
+      if p1 then return p2, p1 end
    end
    return ns_name
 end
