@@ -5,6 +5,8 @@ local path = {}
 local cfg = require("luarocks.core.cfg")
 local dir = require("luarocks.core.dir")
 local require = nil
+
+local dir_sep = package.config:sub(1, 1)
 --------------------------------------------------------------------------------
 
 function path.rocks_dir(tree)
@@ -26,10 +28,10 @@ end
 -- @return string: a pathname with the same directory parts and a versioned basename.
 function path.versioned_name(file, prefix, name, version)
    assert(type(file) == "string")
-   assert(type(name) == "string" and not name:match("/"))
+   assert(type(name) == "string" and not name:match(dir_sep))
    assert(type(version) == "string")
 
-   local rest = file:sub(#prefix+1):gsub("^/*", "")
+   local rest = file:sub(#prefix+1):gsub("^" .. dir_sep .. "*", "")
    local name_version = (name.."_"..version):gsub("%-", "_"):gsub("%.", "_")
    return dir.path(prefix, name_version.."-"..rest)
 end
@@ -44,24 +46,29 @@ end
 function path.path_to_module(file)
    assert(type(file) == "string")
 
-   local name = file:match("(.*)%."..cfg.lua_extension.."$")
-   if name then
-      name = name:gsub("/", ".")
-   else
-      name = file:match("(.*)%."..cfg.lib_extension.."$")
-      if name then
-         name = name:gsub("/", ".")
-      --[[ TODO disable static libs until we fix the conflict in the manifest, which will take extending the manifest format.
-      else
-         name = file:match("(.*)%."..cfg.static_lib_extension.."$")
-         if name then
-            name = name:gsub("/", ".")
-         end
-      ]]
+   local exts = {}
+   local paths = package.path .. ";" .. package.cpath
+   for entry in paths:gmatch("[^;]+") do
+      local ext = entry:match("%.([a-z]+)$")
+      if ext then
+         exts[ext] = true
       end
    end
+
+   local name
+   for ext, _ in pairs(exts) do
+      name = file:match("(.*)%." .. ext .. "$")
+      if name then
+         name = name:gsub("[\\/]", ".")
+         break
+      end
+   end
+
    if not name then name = file end
+
+   -- remove any beginning and trailing slashes-converted-to-dots
    name = name:gsub("^%.+", ""):gsub("%.+$", "")
+
    return name
 end
 
@@ -107,6 +114,44 @@ function path.which_i(file_name, name, version, tree, i)
       file_name = path.versioned_name(file_name, deploy_dir, name, version)
    end
    return file_name
+end
+
+function path.rocks_tree_to_string(tree)
+   if type(tree) == "string" then
+      return tree
+   else
+      assert(type(tree) == "table")
+      return tree.root
+   end
+end
+
+--- Apply a given function to the active rocks trees based on chosen dependency mode.
+-- @param deps_mode string: Dependency mode: "one" for the current default tree,
+-- "all" for all trees, "order" for all trees with priority >= the current default,
+-- "none" for no trees (this function becomes a nop).
+-- @param fn function: function to be applied, with the tree dir (string) as the first
+-- argument and the remaining varargs of map_trees as the following arguments.
+-- @return a table with all results of invocations of fn collected.
+function path.map_trees(deps_mode, fn, ...)
+   local result = {}
+   local current = cfg.root_dir or cfg.rocks_trees[1]
+   if deps_mode == "one" then
+      table.insert(result, (fn(current, ...)) or 0)
+   else
+      local use = false
+      if deps_mode == "all" then
+         use = true
+      end
+      for _, tree in ipairs(cfg.rocks_trees or {}) do
+         if dir.normalize(path.rocks_tree_to_string(tree)) == dir.normalize(path.rocks_tree_to_string(current)) then
+            use = true
+         end
+         if use then
+            table.insert(result, (fn(tree, ...)) or 0)
+         end
+      end
+   end
+   return result
 end
 
 return path

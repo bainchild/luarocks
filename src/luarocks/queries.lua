@@ -41,24 +41,24 @@ local function arch_to_table(input)
 end
 
 --- Prepare a query in dependency table format.
--- @param ns_name string: the package name, may contain a namespace.
+-- @param name string: the package name.
+-- @param namespace string?: the package namespace.
 -- @param version string?: the package version.
 -- @param substring boolean?: match substrings of the name
 -- (default is false, match full name)
 -- @param arch string?: a string with pipe-separated accepted arch values
 -- @param operator string?: operator for version matching (default is "==")
 -- @return table: A query in table format
-function queries.new(ns_name, version, substring, arch, operator)
-   assert(type(ns_name) == "string")
+function queries.new(name, namespace, version, substring, arch, operator)
+   assert(type(name) == "string")
+   assert(type(namespace) == "string" or not namespace)
    assert(type(version) == "string" or not version)
    assert(type(substring) == "boolean" or not substring)
    assert(type(arch) == "string" or not arch)
    assert(type(operator) == "string" or not operator)
-   
+
    operator = operator or "=="
 
-   local name, namespace = util.split_namespace(ns_name)
-   
    local self = {
       name = name,
       namespace = namespace,
@@ -79,7 +79,7 @@ end
 function queries.all(arch)
    assert(type(arch) == "string" or not arch)
 
-   return queries.new("", nil, true, arch)
+   return queries.new("", nil, nil, true, arch)
 end
 
 do
@@ -100,7 +100,7 @@ do
             ["="] = "==",
             ["!="] = "~="
          }
-         
+
          --- Consumes a constraint from a string, converting it to table format.
          -- For example, a string ">= 1.0, > 2.0" is converted to a table in the
          -- format {op = ">=", version={1,0}} and the rest, "> 2.0", is returned
@@ -111,20 +111,20 @@ do
          -- input string is invalid.
          parse_constraint = function(input)
             assert(type(input) == "string")
-         
+
             local no_upgrade, op, version, rest = input:match("^(@?)([<>=~!]*)%s*([%w%.%_%-]+)[%s,]*(.*)")
             local _op = operators[op]
             version = vers.parse_version(version)
             if not _op then
                return nil, "Encountered bad constraint operator: '"..tostring(op).."' in '"..input.."'"
             end
-            if not version then 
+            if not version then
                return nil, "Could not parse version from constraint: '"..input.."'"
             end
             return { op = _op, version = version, no_upgrade = no_upgrade=="@" and true or nil }, rest
          end
       end
-      
+
       --- Convert a list of constraints from string to table format.
       -- For example, a string ">= 1.0, < 2.0" is converted to a table in the format
       -- {{op = ">=", version={1,0}}, {op = "<", version={2,0}}}.
@@ -135,7 +135,7 @@ do
       -- or nil if the input string is invalid.
       parse_constraints = function(input)
          assert(type(input) == "string")
-      
+
          local constraints, oinput, constraint = {}, input
          while #input > 0 do
             constraint, input = parse_constraint(input)
@@ -148,7 +148,7 @@ do
          return constraints
       end
    end
-   
+
    --- Prepare a query in dependency table format.
    -- @param depstr string: A dependency in string format
    -- as entered in rockspec files.
@@ -164,7 +164,9 @@ do
             return nil, "failed to extract dependency name from '"..depstr.."'"
          end
       end
-   
+
+      ns_name = ns_name:lower()
+
       local constraints, err = parse_constraints(rest)
       if not constraints then
          return nil, err
@@ -214,10 +216,11 @@ function query_mt:__tostring()
    if #self.constraints > 0 then
       local pretty = {}
       for _, c in ipairs(self.constraints) do
+         local v = c.version.string
          if c.op == "==" then
-            table.insert(pretty, tostring(c.version))
+            table.insert(pretty, v)
          else
-            table.insert(pretty, c.op .. " " .. tostring(c.version))
+            table.insert(pretty, c.op .. " " .. v)
          end
       end
       table.insert(out, " ")

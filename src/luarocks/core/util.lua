@@ -4,38 +4,36 @@ local util = {}
 local require = nil
 --------------------------------------------------------------------------------
 
+local dir_sep = package.config:sub(1, 1)
+
 --- Run a process and read a its output.
--- Equivalent to io.popen(cmd):read("*l"), except that it 
+-- Equivalent to io.popen(cmd):read("*l"), except that it
 -- closes the fd right away.
 -- @param cmd string: The command to execute
 -- @param spec string: "*l" by default, to read a single line.
 -- May be used to read more, passing, for instance, "*a".
 -- @return string: the output of the program.
 function util.popen_read(cmd, spec)
-   local fd = io.popen(cmd)
+   local tmpfile = (dir_sep == "\\")
+                   and (os.getenv("TMP") .. "/luarocks-" .. tostring(math.floor(math.random() * 10000)))
+                   or os.tmpname()
+   os.execute(cmd .. " > " .. tmpfile)
+   local fd = io.open(tmpfile, "rb")
+   if not fd then
+      os.remove(tmpfile)
+      return ""
+   end
    local out = fd:read(spec or "*l")
    fd:close()
-   return out
-end
-
---- Create a new shallow copy of a table: a new table with
--- the same keys and values. Keys point to the same objects as
--- the original table (ie, does not copy recursively).
--- @param tbl table: the input table
--- @return table: a new table with the same contents.
-function util.make_shallow_copy(tbl)
-   local copy = {}
-   for k,v in pairs(tbl) do
-      copy[k] = v
-   end
-   return copy
+   os.remove(tmpfile)
+   return out or ""
 end
 
 ---
 -- Formats tables with cycles recursively to any depth.
 -- References to other tables are shown as values.
 -- Self references are indicated.
--- The string returned is "Lua code", which can be procesed
+-- The string returned is "Lua code", which can be processed
 -- (in the case in which indent is composed by spaces or "--").
 -- Userdata and function keys and values are shown as strings,
 -- which logically are exactly not equivalent to the original code.
@@ -53,15 +51,18 @@ function util.show_table(t, tname, top_indent)
    local autoref  -- for self references
 
    local function is_empty_table(tbl) return next(tbl) == nil end
-   
+
    local function basic_serialize(o)
       local so = tostring(o)
       if type(o) == "function" then
-         local info = debug.getinfo(o, "S")
+         local info = debug and debug.getinfo(o, "S")
+         if not info then
+            return ("%q"):format(so)
+         end
          -- info.name is nil because o is not a calling level
          if info.what == "C" then
             return ("%q"):format(so .. ", C function")
-         else 
+         else
             -- the information is defined through lines
             return ("%q"):format(so .. ", defined in (" .. info.linedefined .. "-" .. info.lastlinedefined .. ")" .. info.source)
          end
@@ -71,14 +72,14 @@ function util.show_table(t, tname, top_indent)
          return ("%q"):format(so)
       end
    end
-   
+
    local function add_to_cart(value, name, indent, saved, field)
       indent = indent or ""
       saved = saved or {}
       field = field or name
-      
+
       cart = cart .. indent .. field
-      
+
       if type(value) ~= "table" then
          cart = cart .. " = " .. basic_serialize(value) .. ";\n"
       else
@@ -103,7 +104,7 @@ function util.show_table(t, tname, top_indent)
          end
       end
    end
-   
+
    tname = tname or "__unnamed__"
    if type(t) ~= "table" then
       return tname .. " = " .. basic_serialize(t)
@@ -113,13 +114,14 @@ function util.show_table(t, tname, top_indent)
    return cart .. autoref
 end
 
---- Merges contents of src on top of dst's contents.
+--- Merges contents of src on top of dst's contents
+-- (i.e. if an key from src already exists in dst, replace it).
 -- @param dst Destination table, which will receive src's contents.
 -- @param src Table which provides new contents to dst.
 function util.deep_merge(dst, src)
    for k, v in pairs(src) do
       if type(v) == "table" then
-         if not dst[k] then
+         if dst[k] == nil then
             dst[k] = {}
          end
          if type(dst[k]) == "table" then
@@ -133,13 +135,14 @@ function util.deep_merge(dst, src)
    end
 end
 
---- Merges contents of src below those of dst's contents.
+--- Merges contents of src below those of dst's contents
+-- (i.e. if an key from src already exists in dst, do not replace it).
 -- @param dst Destination table, which will receive src's contents.
 -- @param src Table which provides new contents to dst.
 function util.deep_merge_under(dst, src)
    for k, v in pairs(src) do
       if type(v) == "table" then
-         if not dst[k] then
+         if dst[k] == nil then
             dst[k] = {}
          end
          if type(dst[k]) == "table" then
@@ -158,22 +161,41 @@ end
 -- @param list string: A path string (from $PATH or package.path)
 -- @param sep string: The separator
 -- @param lua_version (optional) string: The Lua version to use.
-function util.cleanup_path(list, sep, lua_version)
+-- @param keep_first (optional) if true, keep first occurrence in case
+-- of duplicates; otherwise keep last occurrence. The default is false.
+function util.cleanup_path(list, sep, lua_version, keep_first)
    assert(type(list) == "string")
    assert(type(sep) == "string")
+
+   list = list:gsub(dir_sep, "/")
+
    local parts = util.split_string(list, sep)
    local final, entries = {}, {}
-   for _, part in ipairs(parts) do
-      part = part:gsub("//", "/")
+   local start, stop, step
+
+   if keep_first then
+      start, stop, step = 1, #parts, 1
+   else
+      start, stop, step = #parts, 1, -1
+   end
+
+   for i = start, stop, step do
+      local part = parts[i]:gsub("//", "/")
       if lua_version then
-         part = part:gsub("/lua/[%d.]+/", "/lua/"..lua_version.."/")
+         part = part:gsub("/lua/([%d.]+)/", function(part_version)
+            if part_version:sub(1, #lua_version) ~= lua_version then
+               return "/lua/"..lua_version.."/"
+            end
+         end)
       end
       if not entries[part] then
-         table.insert(final, part)
+         local at = keep_first and #final+1 or 1
+         table.insert(final, at, part)
          entries[part] = true
       end
    end
-   return table.concat(final, sep)
+
+   return (table.concat(final, sep):gsub("/", dir_sep))
 end
 
 -- from http://lua-users.org/wiki/SplitJoin

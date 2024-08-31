@@ -2,9 +2,9 @@
 
 # Defaults
 
-PREFIX="/usr/local"
-SYSCONFDIR="$PREFIX/etc/luarocks"
-ROCKS_TREE="$PREFIX"
+prefix="/usr/local"
+sysconfdir="$prefix/etc"
+rocks_tree="$prefix"
 
 # ----------------------------------------------------------------------------
 # FUNCTION DEFINITIONS
@@ -29,7 +29,12 @@ canonicalpath() {
    else
       if cd "$(dirname "$1")" >/dev/null 2>&1
       then
-         echo "$PWD/$(basename "$1")"
+         if [ "$PWD" = "/" ]
+         then
+            echo "/$(basename "$1")"
+         else
+            echo "$PWD/$(basename "$1")"
+         fi
       else
          echo "$1"
       fi
@@ -85,60 +90,56 @@ BLUE() {
 
 show_help() {
 cat <<EOF
+Usage: ./configure [OPTION]...
 
-Configure the build process of LuaRocks.
+Defaults for the options are specified in brackets.
 
---help                         This help.
+Configuration:
+  -h, --help                   display this help and exit
 
-Where to install LuaRocks:
---------------------------
+Installation directories:
+  --prefix=PREFIX              Directory where LuaRocks should be installed
+                               [/usr/local]
 
---prefix=PREFIX                Directory where LuaRocks should be installed.
-                               - Default is $PREFIX
---sysconfdir=SYSCONFDIR        Where the config file should be installed.
-                               - Default is $SYSCONFDIR
-                                 (PREFIX/etc/luarocks)
+By default, \`make install' will install all the files in \`/usr/local',
+\`/usr/local/lib' etc.  You can specify an installation prefix other than
+\`/usr/local/' using \`--prefix', for instance \`--prefix=\$HOME'.
+
+For better control, use the options below.
+
+Fine tuning of the installation directories:
+  --sysconfdir=SYSCONFDIR      Directory for single-machine config [PREFIX/etc]
 
 Where to install files provided by rocks:
------------------------------------------
-
---rocks-tree=ROCKS_DIR         Root of the local tree of installed rocks.
+  --rocks-tree=DIR             Root of the local tree of installed rocks.
                                To make files installed in this location
                                accessible to Lua and your \$PATH, see
                                "luarocks path --help" after installation.
                                Avoid using paths controlled by your
                                system's package manager, such as /usr.
-                               - Default is $PREFIX
-                                 (PREFIX)
+                               - Default is [PREFIX]
 
 Where is your Lua interpreter:
-------------------------------
-
---lua-version=VERSION          Use specific Lua version: 5.1, 5.2, 5.3, or 5.4
+  --lua-version=VERSION        Use specific Lua version: 5.1, 5.2, 5.3, or 5.4
                                - Default is auto-detected.
---with-lua=LUA_DIR             Use Lua from given directory.
-                               - Default is auto-detected from your \$PATH
-                                 (or the parent directory of LUA_BINDIR
-                                 if --with-lua-bin is used).
---with-lua-bin=LUA_BINDIR      You can also specify Lua's bin dir.
+  --with-lua-bin=LUA_BINDIR    Location of your Lua binar(y/ies).
                                - Default is the directory of the
-                                 auto-detected Lua interpreter,
-                                 (or LUA_DIR/bin if --with-lua is used)
---with-lua-include=LUA_INCDIR  Lua's includes dir.
-                               - Default is LUA_DIR/include
---with-lua-lib=LUA_LIBDIR      Lua's libraries dir.
-                               - Default is LUA_DIR/lib
+                               auto-detected Lua interpreter,
+                               (or DIR/bin if --with-lua is used)
+  --with-lua=LUA_DIR           Use Lua from given directory. [LUA_BINDIR/..]
+  --with-lua-include=DIR       Lua's includes dir. [LUA_DIR/include]
+  --with-lua-lib=DIR           Lua's libraries dir. [LUA_DIR/lib]
+  --with-lua-interpreter=NAME  Lua interpreter name.
+                               - Default is to auto-detected
 
 For specialized uses of LuaRocks:
----------------------------------
-
---force-config                 Force using a single config location.
+  --force-config               Force using a single config location.
                                Do not honor the \$LUAROCKS_CONFIG_5_x
                                or \$LUAROCKS_CONFIG environment
                                variable or the user's local config.
                                Useful to avoid conflicts when LuaRocks
                                is embedded within an application.
---disable-incdir-check         If you do not wish to use "luarocks build",
+  --disable-incdir-check       If you do not wish to use "luarocks build",
                                (e.g. when only deploying binary packages)
                                you do not need lua.h installed. This flag
                                skips the check for lua.h in "configure".
@@ -167,7 +168,7 @@ detect_lua_version() {
 }
 
 search_interpreter() {
-   suffix="$1"
+   name="$1"
    lua_at=""
    if [ "$LUA_BINDIR_SET" = "yes" ]
    then
@@ -175,18 +176,19 @@ search_interpreter() {
    elif [ "$LUA_DIR_SET" = "yes" ]
    then
       LUA_BINDIR="$LUA_DIR/bin"
-      if [ -f "$LUA_BINDIR/lua$suffix" ]
+      if [ -f "$LUA_BINDIR/$name" ]
       then
          lua_at="$LUA_BINDIR"
       fi
    else
-      lua_at=$(find_program "lua$suffix")
+      lua_at=$(find_program "$name")
    fi
-   if [ -n "$lua_at" ] && [ -x "$lua_at/lua$suffix" ]
+   if [ -n "$lua_at" ] && [ -x "$lua_at/$name" ]
    then
-      if detect_lua_version "$lua_at/lua$suffix"
+      if detect_lua_version "$lua_at/$name"
       then
-         echo "Lua interpreter found: $(GREEN "$lua_at/lua$suffix")"
+         LUA="$lua_at/$name"
+         echo "Lua interpreter found: $(GREEN "$LUA")"
          if [ "$LUA_BINDIR_SET" != "yes" ]
          then
             LUA_BINDIR="$lua_at"
@@ -195,7 +197,7 @@ search_interpreter() {
          then
             LUA_DIR=$(dirname "$lua_at")
          fi
-         LUA_INTERPRETER="lua$suffix"
+
          return 0
       fi
    fi
@@ -223,7 +225,7 @@ do
 
    # Help
    # ----
-   --help)
+   -h|--help)
       show_help
       exit 0
       ;;
@@ -232,13 +234,13 @@ do
    # --------------------------
    --prefix)
       [ -n "$value" ] || die "Missing value in flag $key."
-      PREFIX="$(canonicalpath "$value")"
-      PREFIX_SET=yes
+      prefix="$(canonicalpath "$value")"
+      prefix_SET=yes
       ;;
    --sysconfdir)
       [ -n "$value" ] || die "Missing value in flag $key."
-      SYSCONFDIR="$(canonicalpath "$value")"
-      SYSCONFDIR_SET=yes
+      sysconfdir="$(canonicalpath "$value")"
+      sysconfdir_SET=yes
       ;;
 
 
@@ -246,8 +248,8 @@ do
    # -----------------------------------------
    --rocks-tree)
       [ -n "$value" ] || die "Missing value in flag $key."
-      ROCKS_TREE="$(canonicalpath "$value")"
-      ROCKS_TREE_SET=yes
+      rocks_tree="$(canonicalpath "$value")"
+      rocks_tree_SET=yes
       ;;
 
    # Where is your Lua interpreter:
@@ -285,6 +287,11 @@ do
       [ -d "$LUA_LIBDIR" ] || die "Bad value for --with-lua-lib: $LUA_LIBDIR is not a valid directory."
       LUA_LIBDIR_SET=yes
       ;;
+   --with-lua-interpreter)
+      [ -n "$value" ] || die "Missing value in flag $key."
+      LUA_EXE="$value"
+      LUA_EXE_SET=yes
+      ;;
 
    # For specialized uses of LuaRocks:
    # ---------------------------------
@@ -314,7 +321,7 @@ do
 done
 
 echo
-BLUE "Configuring LuaRocks..."
+BLUE "Configuring LuaRocks version dev..."
 echo
 echo
 
@@ -322,17 +329,18 @@ echo
 # Derive options from the ones given
 # ----------------------------------------
 
-if [ "$PREFIX_SET" = "yes" ] && [ ! "$SYSCONFDIR_SET" = "yes" ]
+if [ "$prefix_SET" = "yes" ] && [ ! "$sysconfdir_SET" = "yes" ]
 then
-   if [ "$PREFIX" = "/usr" ]
-   then SYSCONFDIR=/etc/luarocks
-   else SYSCONFDIR=$PREFIX/etc/luarocks
+   if [ "$prefix" = "/usr" ]
+   then sysconfdir=/etc
+   else sysconfdir=$prefix/etc
    fi
+   sysconfdir_SET=yes
 fi
 
-if [ "$PREFIX_SET" = "yes" ] && [ ! "$ROCKS_TREE_SET" = "yes" ]
+if [ "$prefix_SET" = "yes" ] && [ ! "$rocks_tree_SET" = "yes" ]
 then
-   ROCKS_TREE=$PREFIX
+   rocks_tree=$prefix
 fi
 
 # ----------------------------------------
@@ -343,25 +351,30 @@ lua_interp_found=no
 
 case "$LUA_VERSION" in
 5.1)
-   suffixes="5.1 51 -5.1 -51 jit"
+   names="lua5.1 lua51 lua-5.1 lua-51 luajit lua"
    ;;
 5.2)
-   suffixes="5.2 52 -5.2 -52"
+   names="lua5.2 lua52 lua-5.2 lua-52 lua"
    ;;
 5.3)
-   suffixes="5.3 53 -5.3 -53"
+   names="lua5.3 lua53 lua-5.3 lua-53 lua"
    ;;
 5.4)
-   suffixes="5.4 54 -5.4 -54"
+   names="lua5.4 lua54 lua-5.4 lua-54 lua"
    ;;
 *)
-   suffixes="5.4 54 -5.4 -54 5.3 53 -5.3 -53 5.2 52 -5.2 -52 5.1 51 -5.1 -51 jit"
+   names="lua5.4 lua54 lua-5.4 lua-54 lua5.3 lua53 lua-5.3 lua-53 lua5.2 lua52 lua-5.2 lua-52 lua5.1 lua51 lua-5.1 lua-51 luajit lua"
    ;;
 esac
 
-for suffix in $suffixes ""
+if [ "$LUA_EXE_SET" = "yes" ]
+then
+   names="$LUA_EXE"
+fi
+
+for name in $names
 do
-   search_interpreter "$suffix" && {
+   search_interpreter "$name" && {
       lua_interp_found=yes
       break
    }
@@ -388,8 +401,8 @@ fi
 
 if [ "$LUA_VERSION_SET" = "yes" ]
 then
-   echo_n "Checking if $LUA_BINDIR/$LUA_INTERPRETER is Lua version $LUA_VERSION... "
-   if detect_lua_version "$LUA_BINDIR/$LUA_INTERPRETER"
+   echo_n "Checking if $LUA is Lua version $LUA_VERSION... "
+   if detect_lua_version "$LUA"
    then
       echo "yes"
    else
@@ -418,19 +431,23 @@ check_incdir() {
    for lua_h in \
       "$incdir/lua/$LUA_VERSION/lua.h" \
       "$incdir/lua$LUA_VERSION/lua.h" \
+      "$incdir/lua-$LUA_VERSION/lua.h" \
+      "$incdir/lua$(echo "$LUA_VERSION" | tr -d .)/lua.h" \
       "$incdir/lua.h" \
-      "$incdir/lua$LUA_VERSION/lua.h" \
-      $("$LUA_BINDIR/$LUA_INTERPRETER" -e 'print(jit and [['"$incdir"'/luajit-]]..jit.version:match("(%d+%.%d+)")..[[/lua.h]] or "")')
+      $("$LUA" -e 'print(jit and [['"$incdir"'/luajit-]]..jit.version:match("(%d+%.%d+)")..[[/lua.h]] or "")')
    do
-      [ -f "$lua_h" ] && return
+      if [ -f "$lua_h" ]
+      then
+         grep "LUA_VERSION_NUM.*$LUA_VERSION" "$lua_h" > /dev/null 2> /dev/null && return
+      fi
       tried="$tried $lua_h"
    done
 
-   echo "$(RED "lua.h not found") (tried$tried)"
+   echo "$(RED "lua.h for Lua $LUA_VERSION not found") (tried$tried)"
    echo
    echo "If the development files for Lua (headers and libraries)"
    echo "are installed in your system, you may need to use the"
-   echo "$(BOLD --with-lua) or $(BOLD --with-include) flags to specify their location."
+   echo "$(BOLD --with-lua) or $(BOLD --with-lua-include) flags to specify their location."
    echo
    echo "If those files are not yet installed, you need to install"
    echo "them using the appropriate method for your operating system."
@@ -465,11 +482,11 @@ cat <<EOF > config.unix
 # This file was automatically generated by the configure script.
 # Run "./configure --help" for details.
 
-PREFIX=$PREFIX
-SYSCONFDIR=$SYSCONFDIR
-ROCKS_TREE=$ROCKS_TREE
+prefix=$prefix
+sysconfdir=$sysconfdir
+rocks_tree=$rocks_tree
 LUA_VERSION=$LUA_VERSION
-LUA_INTERPRETER=$LUA_INTERPRETER
+LUA=$LUA
 LUA_DIR=$LUA_DIR
 LUA_BINDIR=$LUA_BINDIR
 LUA_INCDIR=$LUA_INCDIR
@@ -477,36 +494,20 @@ LUA_LIBDIR=$LUA_LIBDIR
 FORCE_CONFIG=$FORCE_CONFIG
 EOF
 
-{
-   echo '-- LuaRocks configuration'
-   echo
-   echo 'rocks_trees = {'
-   echo '   { name = "user", root = home .. "/.luarocks" },'
-   echo '   { name = "system", root = "'"$ROCKS_TREE"'" },'
-   echo '}'
-   if [ -n "$LUA_INTERPRETER" ]; then echo 'lua_interpreter = "'"$LUA_INTERPRETER"'"' ; fi
-   echo 'variables = {'
-   if [ -n "$LUA_DIR" ]; then echo '   LUA_DIR = "'"$LUA_DIR"'",' ; fi
-   if [ -n "$LUA_INCDIR" ]; then echo '   LUA_INCDIR = "'"$LUA_INCDIR"'",' ; fi
-   if [ -n "$LUA_BINDIR" ]; then echo '   LUA_BINDIR = "'"$LUA_BINDIR"'",' ; fi
-   if [ -n "$LUA_LIBDIR" ]; then echo '   LUA_LIBDIR = "'"$LUA_LIBDIR"'",' ; fi
-   echo '}'
-} > "config-$LUA_VERSION.lua.in"
-
 echo
 BLUE "Done configuring."
 echo
 echo
-echo "LuaRocks will be installed at......: $(GREEN "$PREFIX")"
-echo "LuaRocks will install rocks at.....: $(GREEN "$ROCKS_TREE")"
-echo "LuaRocks configuration directory...: $(GREEN "$SYSCONFDIR")"
+echo "LuaRocks will be installed at......: $(GREEN "$prefix")"
+echo "LuaRocks will install rocks at.....: $(GREEN "$rocks_tree")"
+echo "LuaRocks configuration directory...: $(GREEN "$sysconfdir/luarocks")"
 echo "Using Lua from.....................: $(GREEN "$LUA_DIR")"
 if [ "$LUA_BINDIR_SET" = "yes" ]; then echo "Lua bin directory..................: $(GREEN "$LUA_BINDIR")" ; fi
 if [ "$LUA_INCDIR_SET" = "yes" ]; then echo "Lua include directory..............: $(GREEN "$LUA_INCDIR")" ; fi
 if [ "$LUA_LIBDIR_SET" = "yes" ]; then echo "Lua lib directory..................: $(GREEN "$LUA_LIBDIR")" ; fi
 echo
-echo "* Type $(BOLD make build) and $(BOLD make install):"
-echo "  to install to $PREFIX as usual."
+echo "* Type $(BOLD make) and $(BOLD make install):"
+echo "  to install to $prefix as usual."
 echo "* Type $(BOLD make bootstrap):"
-echo "  to install LuaRocks into $ROCKS_TREE as a rock."
+echo "  to install LuaRocks into $rocks_tree as a rock."
 echo

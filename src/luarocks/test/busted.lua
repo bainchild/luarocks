@@ -21,7 +21,7 @@ function busted.run_tests(test, args)
       test = {}
    end
 
-   local ok, bustedver, where = deps.fulfill_dependency(queries.new("busted"))
+   local ok, bustedver, where = deps.fulfill_dependency(queries.new("busted"), nil, nil, nil, "test_dependencies")
    if not ok then
       return nil, bustedver
    end
@@ -37,13 +37,6 @@ function busted.run_tests(test, args)
 
       if not fs.exists(busted_exe) and not fs.exists(busted_bat) then
          return nil, "'busted' executable failed to be installed"
-      end
-   end
-
-   if type(test.flags) == "table" then
-      -- insert any flags given in test.flags at the front of args
-      for i = 1, #test.flags do
-         table.insert(args, i, test.flags[i])
       end
    end
 

@@ -42,11 +42,16 @@ function unix.absolute_name(pathname, relative_to)
    assert(type(pathname) == "string")
    assert(type(relative_to) == "string" or not relative_to)
 
+   local unquoted = pathname:match("^['\"](.*)['\"]$")
+   if unquoted then
+      pathname = unquoted
+   end
+
    relative_to = relative_to or fs.current_dir()
    if pathname:sub(1,1) == "/" then
-      return pathname
+      return dir.normalize(pathname)
    else
-      return relative_to .. "/" .. pathname
+      return dir.path(relative_to, pathname)
    end
 end
 
@@ -59,24 +64,22 @@ function unix.root_of(_)
 end
 
 --- Create a wrapper to make a script executable from the command-line.
--- @param file string: Pathname of script to be made executable.
--- @param dest string: Directory where to put the wrapper.
+-- @param script string: Pathname of script to be made executable.
+-- @param target string: wrapper target pathname (without wrapper suffix).
 -- @param name string: rock name to be used in loader context.
 -- @param version string: rock version to be used in loader context.
 -- @return boolean or (nil, string): True if succeeded, or nil and
 -- an error message.
-function unix.wrap_script(file, dest, deps_mode, name, version, ...)
-   assert(type(file) == "string" or not file)
-   assert(type(dest) == "string")
+function unix.wrap_script(script, target, deps_mode, name, version, ...)
+   assert(type(script) == "string" or not script)
+   assert(type(target) == "string")
    assert(type(deps_mode) == "string")
    assert(type(name) == "string" or not name)
    assert(type(version) == "string" or not version)
-   
-   local wrapname = fs.is_dir(dest) and dest.."/"..dir.base_name(file) or dest
 
-   local wrapper = io.open(wrapname, "w")
+   local wrapper = io.open(target, "w")
    if not wrapper then
-      return nil, "Could not open "..wrapname.." for writing."
+      return nil, "Could not open "..target.." for writing."
    end
 
    local lpath, lcpath = path.package_paths(deps_mode)
@@ -85,12 +88,19 @@ function unix.wrap_script(file, dest, deps_mode, name, version, ...)
       "package.path="..util.LQ(lpath..";").."..package.path",
       "package.cpath="..util.LQ(lcpath..";").."..package.cpath",
    }
-   if dest == "luarocks" or dest == "luarocks-admin" then
+
+   local remove_interpreter = false
+   local base = dir.base_name(target):gsub("%..*$", "")
+   if base == "luarocks" or base == "luarocks-admin" then
+      if cfg.is_binary then
+         remove_interpreter = true
+      end
       luainit = {
          "package.path="..util.LQ(package.path),
          "package.cpath="..util.LQ(package.cpath),
       }
    end
+
    if name and version then
       local addctx = "local k,l,_=pcall(require,"..util.LQ("luarocks.loader")..") _=k " ..
                      "and l.add_context("..util.LQ(name)..","..util.LQ(version)..")"
@@ -98,21 +108,27 @@ function unix.wrap_script(file, dest, deps_mode, name, version, ...)
    end
 
    local argv = {
-      fs.Q(dir.path(cfg.variables["LUA_BINDIR"], cfg.lua_interpreter)),
-      file and fs.Q(file) or "",
+      fs.Q(cfg.variables["LUA"]),
+      "-e",
+      fs.Q(table.concat(luainit, ";")),
+      script and fs.Q(script) or [[$([ "$*" ] || echo -i)]],
       ...
    }
+   if remove_interpreter then
+      table.remove(argv, 1)
+      table.remove(argv, 1)
+      table.remove(argv, 1)
+   end
 
    wrapper:write("#!/bin/sh\n\n")
    wrapper:write("LUAROCKS_SYSCONFDIR="..fs.Q(cfg.sysconfdir) .. " ")
-   wrapper:write("LUA_INIT="..fs.Q(table.concat(luainit, ";")).." ")
    wrapper:write("exec "..table.concat(argv, " ")..' "$@"\n')
    wrapper:close()
 
-   if fs.set_permissions(wrapname, "exec", "all") then
+   if fs.set_permissions(target, "exec", "all") then
       return true
    else
-      return nil, "Could not make "..wrapname.." executable."
+      return nil, "Could not make "..target.." executable."
    end
 end
 
@@ -138,7 +154,7 @@ function unix.is_actual_binary(filename)
    return first ~= "#!"
 end
 
-function unix.copy_binary(filename, dest) 
+function unix.copy_binary(filename, dest)
    return fs.copy(filename, dest, "exec")
 end
 
@@ -160,33 +176,28 @@ function unix.tmpname()
    return os.tmpname()
 end
 
-function unix.current_user()
-   return os.getenv("USER")
-end
-
 function unix.export_cmd(var, val)
    return ("export %s='%s'"):format(var, val)
 end
 
+local octal_to_rwx = {
+   ["0"] = "---",
+   ["1"] = "--x",
+   ["2"] = "-w-",
+   ["3"] = "-wx",
+   ["4"] = "r--",
+   ["5"] = "r-x",
+   ["6"] = "rw-",
+   ["7"] = "rwx",
+}
+local rwx_to_octal = {}
+for octal, rwx in pairs(octal_to_rwx) do
+   rwx_to_octal[rwx] = octal
+end
 --- Moderate the given permissions based on the local umask
 -- @param perms string: permissions to moderate
 -- @return string: the moderated permissions
-function unix._unix_moderate_permissions(perms)
-   local octal_to_rwx = {
-      ["0"] = "---",
-      ["1"] = "--x",
-      ["2"] = "-w-",
-      ["3"] = "-wx",
-      ["4"] = "r--",
-      ["5"] = "r-x",
-      ["6"] = "rw-",
-      ["7"] = "rwx",
-   }
-   local rwx_to_octal = {}
-   for octal, rwx in pairs(octal_to_rwx) do
-      rwx_to_octal[rwx] = octal
-   end
-
+local function apply_umask(perms)
    local umask = fs._unix_umask()
 
    local moderated_perms = ""
@@ -206,6 +217,50 @@ function unix._unix_moderate_permissions(perms)
       moderated_perms = moderated_perms .. rwx_to_octal[new_perm]
    end
    return moderated_perms
+end
+
+function unix._unix_mode_scope_to_perms(mode, scope)
+   local perms
+   if mode == "read" and scope == "user" then
+      perms = apply_umask("600")
+   elseif mode == "exec" and scope == "user" then
+      perms = apply_umask("700")
+   elseif mode == "read" and scope == "all" then
+      perms = apply_umask("666")
+   elseif mode == "exec" and scope == "all" then
+      perms = apply_umask("777")
+   else
+      return false, "Invalid permission " .. mode .. " for " .. scope
+   end
+   return perms
+end
+
+function unix.system_cache_dir()
+   if fs.is_dir("/var/cache") then
+      return "/var/cache"
+   end
+   return dir.path(fs.system_temp_dir(), "cache")
+end
+
+function unix.search_in_path(program)
+   if program:match("/") then
+      local fd = io.open(dir.path(program), "r")
+      if fd then
+         fd:close()
+         return true, program
+      end
+
+      return false
+   end
+
+   for d in (os.getenv("PATH") or ""):gmatch("([^:]+)") do
+      local fd = io.open(dir.path(d, program), "r")
+      if fd then
+         fd:close()
+         return true, d
+      end
+   end
+   return false
 end
 
 return unix

@@ -2,6 +2,8 @@
 --- A set of basic functional utilities
 local fun = {}
 
+local unpack = table.unpack or unpack
+
 function fun.concat(xs, ys)
    local rs = {}
    local n = #xs
@@ -61,6 +63,81 @@ end
 function fun.sort_in(t, f)
    table.sort(t, f)
    return t
+end
+
+function fun.flip(f)
+   return function(a, b)
+      return f(b, a)
+   end
+end
+
+function fun.find(xs, f)
+   if type(xs) == "function" then
+      for v in xs do
+         local x = f(v)
+         if x then
+            return x
+         end
+      end
+   elseif type(xs) == "table" then
+      for _, v in ipairs(xs) do
+         local x = f(v)
+         if x then
+            return x
+         end
+      end
+   end
+end
+
+function fun.partial(f, ...)
+   local n = select("#", ...)
+   if n == 1 then
+      local a = ...
+      return function(...)
+         return f(a, ...)
+      end
+   elseif n == 2 then
+      local a, b = ...
+      return function(...)
+         return f(a, b, ...)
+      end
+   else
+      local pargs = { n = n, ... }
+      return function(...)
+         local m = select("#", ...)
+         local fargs = { ... }
+         local args = {}
+         for i = 1, n do
+            args[i] = pargs[i]
+         end
+         for i = 1, m do
+            args[i+n] = fargs[i]
+         end
+         return f(unpack(args, 1, n+m))
+      end
+   end
+end
+
+function fun.memoize(fn)
+   local memory = setmetatable({}, { __mode = "k" })
+   local errors = setmetatable({}, { __mode = "k" })
+   local NIL = {}
+   return function(arg)
+      if memory[arg] then
+         if memory[arg] == NIL then
+            return nil, errors[arg]
+         end
+         return memory[arg]
+      end
+      local ret1, ret2 = fn(arg)
+      if ret1 ~= nil then
+         memory[arg] = ret1
+      else
+         memory[arg] = NIL
+         errors[arg] = ret2
+      end
+      return ret1, ret2
+   end
 end
 
 return fun

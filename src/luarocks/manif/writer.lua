@@ -30,7 +30,7 @@ local function store_package_items(storage, name, version, items)
 
    local package_identifier = name.."/"..version
 
-   for item_name, path in pairs(items) do
+   for item_name, path in pairs(items) do  -- luacheck: ignore 431
       if not storage[item_name] then
          storage[item_name] = {}
       end
@@ -54,18 +54,27 @@ local function remove_package_items(storage, name, version, items)
 
    local package_identifier = name.."/"..version
 
-   for item_name, path in pairs(items) do
-      local all_identifiers = storage[item_name]
-
-      for i, identifier in ipairs(all_identifiers) do
-         if identifier == package_identifier then
-            table.remove(all_identifiers, i)
-            break
-         end
+   for item_name, path in pairs(items) do  -- luacheck: ignore 431
+      local key = item_name
+      local all_identifiers = storage[key]
+      if not all_identifiers then
+         key = key .. ".init"
+         all_identifiers = storage[key]
       end
 
-      if #all_identifiers == 0 then
-         storage[item_name] = nil
+      if all_identifiers then
+         for i, identifier in ipairs(all_identifiers) do
+            if identifier == package_identifier then
+               table.remove(all_identifiers, i)
+               break
+            end
+         end
+
+         if #all_identifiers == 0 then
+            storage[key] = nil
+         end
+      else
+         util.warning("Cannot find entry for " .. item_name .. " in manifest -- corrupted manifest?")
       end
    end
 end
@@ -81,14 +90,18 @@ end
 local function update_dependencies(manifest, deps_mode)
    assert(type(manifest) == "table")
    assert(type(deps_mode) == "string")
-   
+
+   if not manifest.dependencies then manifest.dependencies = {} end
+   local mdeps = manifest.dependencies
+
    for pkg, versions in pairs(manifest.repository) do
       for version, repositories in pairs(versions) do
          for _, repo in ipairs(repositories) do
             if repo.arch == "installed" then
-               repo.dependencies = {}
-               deps.scan_deps(repo.dependencies, manifest, pkg, version, deps_mode)
-               repo.dependencies[pkg] = nil
+               local rd = {}
+               repo.dependencies = rd
+               deps.scan_deps(rd, mdeps, pkg, version, deps_mode)
+               rd[pkg] = nil
             end
          end
       end
@@ -151,7 +164,7 @@ local function filter_by_lua_version(manifest, lua_version, repodir, cache)
    assert(type(manifest) == "table")
    assert(type(repodir) == "string")
    assert((not cache) or type(cache) == "table")
-   
+
    cache = cache or {}
    lua_version = vers.parse_version(lua_version)
    for pkg, versions in pairs(manifest.repository) do
@@ -167,7 +180,7 @@ local function filter_by_lua_version(manifest, lua_version, repodir, cache)
                if rockspec then
                   cache[pathname] = rockspec
                   for _, dep in ipairs(rockspec.dependencies) do
-                     if dep.name == "lua" then 
+                     if dep.name == "lua" then
                         if not vers.match_constraints(lua_version, dep.constraints) then
                            table.insert(to_remove, version)
                         end
@@ -254,7 +267,7 @@ function writer.make_rock_manifest(name, version)
       local walk = tree
       local last
       local last_name
-      for filename in file:gmatch("[^/]+") do
+      for filename in file:gmatch("[^\\/]+") do
          local next = walk[filename]
          if not next then
             next = {}
@@ -279,7 +292,7 @@ function writer.make_rock_manifest(name, version)
 end
 
 -- Writes a 'rock_namespace' file in a locally installed rock directory.
--- @param name string: the rock name (may be in user/rock format)
+-- @param name string: the rock name, without a namespace
 -- @param version string: the rock version
 -- @param namespace string?: the namespace
 -- @return true if successful (or unnecessary, if there is no namespace),
@@ -288,8 +301,6 @@ function writer.make_namespace_file(name, version, namespace)
    assert(type(name) == "string" and not name:match("/"))
    assert(type(version) == "string")
    assert(type(namespace) == "string" or not namespace)
-   name = util.adjust_name_and_namespace(name, { namespace = namespace })
-   name, namespace = util.split_namespace(name)
    if not namespace then
       return true
    end
@@ -340,12 +351,18 @@ function writer.make_manifest(repo, deps_mode, remote)
          local vmanifest = { repository = {}, modules = {}, commands = {} }
          local ok, err = store_results(results, vmanifest)
          filter_by_lua_version(vmanifest, luaver, repo, cache)
-         save_table(repo, "manifest-"..luaver, vmanifest)
+         if not cfg.no_manifest then
+            save_table(repo, "manifest-"..luaver, vmanifest)
+         end
       end
    else
       update_dependencies(manifest, deps_mode)
    end
 
+   if cfg.no_manifest then
+      -- We want to have cache updated; but exit before save_table is called
+      return true
+   end
    return save_table(repo, "manifest", manifest)
 end
 
@@ -383,6 +400,10 @@ function writer.add_to_manifest(name, version, repo, deps_mode)
    if not ok then return nil, err end
 
    update_dependencies(manifest, deps_mode)
+
+   if cfg.no_manifest then
+      return true
+   end
    return save_table(rocks_dir, "manifest", manifest)
 end
 
@@ -414,8 +435,17 @@ function writer.remove_from_manifest(name, version, repo, deps_mode)
    end
 
    local package_entry = manifest.repository[name]
+   if package_entry == nil or package_entry[version] == nil then
+      -- entry is already missing from repository, no need to do anything
+      return true
+   end
 
    local version_entry = package_entry[version][1]
+   if not version_entry then
+      -- manifest looks corrupted, rebuild
+      return writer.make_manifest(rocks_dir, deps_mode)
+   end
+
    remove_package_items(manifest.modules, name, version, version_entry.modules)
    remove_package_items(manifest.commands, name, version, version_entry.commands)
 
@@ -429,6 +459,10 @@ function writer.remove_from_manifest(name, version, repo, deps_mode)
    end
 
    update_dependencies(manifest, deps_mode)
+
+   if cfg.no_manifest then
+      return true
+   end
    return save_table(rocks_dir, "manifest", manifest)
 end
 
@@ -453,7 +487,7 @@ function writer.check_dependencies(repo, deps_mode)
          for _, entry in ipairs(version_entries) do
             if entry.arch == "installed" then
                if manifest.dependencies[name] and manifest.dependencies[name][version] then
-                  deps.report_missing_dependencies(name, version, manifest.dependencies[name][version], deps_mode, cfg.rocks_provided_3_0)
+                  deps.report_missing_dependencies(name, version, manifest.dependencies[name][version], deps_mode, util.get_rocks_provided())
                end
             end
          end

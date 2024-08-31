@@ -3,7 +3,7 @@
 -- http://lua-users.org/wiki/LuaPatch
 --
 -- (c) 2008 David Manura, Licensed under the same terms as Lua (MIT license).
--- Code is heavilly based on the Python-based patch.py version 8.06-1
+-- Code is heavily based on the Python-based patch.py version 8.06-1
 --   Copyright (c) 2008 rainforce.org, MIT License
 --   Project home: http://code.google.com/p/python-patch/ .
 --   Version 0.1
@@ -11,7 +11,6 @@
 local patch = {}
 
 local fs = require("luarocks.fs")
-local fun = require("luarocks.fun")
 
 local io = io
 local os = os
@@ -114,7 +113,7 @@ local function file_lines(f)
     pos_beg = pos + 1
     if #line > 0 then
       return line
-    end    
+    end
   end
 end
 
@@ -255,7 +254,7 @@ function patch.read_patch(filename, data)
     local advance
     if state == 'filenames' then
       if startswith(line, "--- ") then
-        if fun.contains(files.source, nextfileno) then
+        if files.source[nextfileno] then
           all_ok = false
           warning(format("skipping invalid patch for %s",
                          files.source[nextfileno+1]))
@@ -278,7 +277,7 @@ function patch.read_patch(filename, data)
           table.insert(files.source, match)
         end
       elseif not startswith(line, "+++ ") then
-        if fun.contains(files.source, nextfileno) then
+        if files.source[nextfileno] then
           all_ok = false
           warning(format("skipping invalid patch with no target for %s",
                          files.source[nextfileno+1]))
@@ -289,7 +288,7 @@ function patch.read_patch(filename, data)
         end
         state = 'header'
       else
-        if fun.contains(files.target, nextfileno) then
+        if files.target[nextfileno] then
           all_ok = false
           warning(format("skipping invalid patch - double target at line %d",
                          lineno+1))
@@ -331,7 +330,7 @@ function patch.read_patch(filename, data)
     if not advance and state == 'hunkhead' then
       local m1, m2, m3, m4 = match_linerange(line)
       if not m1 then
-        if not fun.contains(files.hunks, nextfileno-1) then
+        if not files.hunks[nextfileno-1] then
           all_ok = false
           warning(format("skipping invalid patch with no hunks for file %s",
                          files.target[nextfileno]))
@@ -526,7 +525,7 @@ local function patch_hunks(srcname, tgtname, hunks)
   tgt:close()
   src:close()
   return true
-end 
+end
 
 local function strip_dirs(filename, strip)
   if strip == nil then return filename end
@@ -540,7 +539,8 @@ local function write_new_file(filename, hunk)
   local fh = io.open(filename, "wb")
   if not fh then return false end
   for _, hline in ipairs(hunk.text) do
-    if not hline:sub(1,1) == "+" then
+    local c = hline:sub(1,1)
+    if c ~= "+" and c ~= "-" and c ~= " " then
       return false, "malformed patch"
     end
     fh:write(hline:sub(2))
@@ -616,7 +616,7 @@ local function patch_file(source, target, epoch, hunks, strip, create_delete)
         end
       end
       hunklineno = 1
-  
+
       -- todo \ No newline at end of file
     end
     -- check hunks in source file

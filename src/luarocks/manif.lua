@@ -16,6 +16,8 @@ local queries = require("luarocks.queries")
 local type_manifest = require("luarocks.type.manifest")
 
 manif.cache_manifest = core.cache_manifest
+manif.load_rocks_tree_manifests = core.load_rocks_tree_manifests
+manif.scan_dependencies = core.scan_dependencies
 
 manif.rock_manifest_cache = {}
 
@@ -65,30 +67,16 @@ function manif.load_rock_manifest(name, version, root)
    return rock_manifest.rock_manifest
 end
 
-
-local function fetch_manifest_from(repo_url, filename)
-   local url = dir.path(repo_url, filename)
-   local name = repo_url:gsub("[/:]","_")
-   local cache_dir = dir.path(cfg.local_cache, name)
-   local ok = fs.make_dir(cache_dir)
-   if not ok then
-      return nil, "Failed creating temporary cache directory "..cache_dir
-   end
-   local file, err, errcode = fetch.fetch_url(url, dir.path(cache_dir, filename), true)
-   if not file then
-      return nil, "Failed fetching manifest for "..repo_url..(err and " - "..err or ""), errcode
-   end
-   return file
-end
-
 --- Load a local or remote manifest describing a repository.
 -- All functions that use manifest tables assume they were obtained
 -- through this function.
 -- @param repo_url string: URL or pathname for the repository.
 -- @param lua_version string: Lua version in "5.x" format, defaults to installed version.
+-- @param versioned_only boolean: If true, do not fall back to the main manifest
+-- if a versioned manifest was not found.
 -- @return table or (nil, string, [string]): A table representing the manifest,
 -- or nil followed by an error message and an optional error code.
-function manif.load_manifest(repo_url, lua_version)
+function manif.load_manifest(repo_url, lua_version, versioned_only)
    assert(type(repo_url) == "string")
    assert(type(lua_version) == "string" or not lua_version)
    lua_version = lua_version or cfg.lua_version
@@ -102,11 +90,11 @@ function manif.load_manifest(repo_url, lua_version)
    local filenames = {
       "manifest-"..lua_version..".zip",
       "manifest-"..lua_version,
-      "manifest",
+      not versioned_only and "manifest" or nil,
    }
 
    local protocol, repodir = dir.split_url(repo_url)
-   local pathname
+   local pathname, from_cache
    if protocol == "file" then
       for _, filename in ipairs(filenames) do
          pathname = dir.path(repodir, filename)
@@ -117,27 +105,29 @@ function manif.load_manifest(repo_url, lua_version)
    else
       local err, errcode
       for _, filename in ipairs(filenames) do
-         pathname, err, errcode = fetch_manifest_from(repo_url, filename)
+         pathname, err, errcode, from_cache = fetch.fetch_caching(dir.path(repo_url, filename), "no_mirror")
          if pathname then
             break
          end
       end
-      if not pathname then 
+      if not pathname then
          return nil, err, errcode
       end
    end
    if pathname:match(".*%.zip$") then
       pathname = fs.absolute_name(pathname)
-      local dirname = dir.dir_name(pathname)
-      fs.change_dir(dirname)
       local nozip = pathname:match("(.*)%.zip$")
-      fs.delete(nozip)
-      local ok = fs.unzip(pathname)
-      fs.pop_dir()
-      if not ok then
-         fs.delete(pathname)
-         fs.delete(pathname..".timestamp")
-         return nil, "Failed extracting manifest file"
+      if not from_cache then
+         local dirname = dir.dir_name(pathname)
+         fs.change_dir(dirname)
+         fs.delete(nozip)
+         local ok, err = fs.unzip(pathname)
+         fs.pop_dir()
+         if not ok then
+            fs.delete(pathname)
+            fs.delete(pathname..".timestamp")
+            return nil, "Failed extracting manifest file: " .. err
+         end
       end
       pathname = nozip
    end
@@ -191,50 +181,6 @@ function manif.get_next_provider(item_type, item_name, repo)
    end
 end
 
---- Given a name of a module or a command provided by a package, figure out
--- which file provides it.
--- @param name string: package name.
--- @param version string: package version.
--- @param item_type string: "module" or "command".
--- @param item_name string: module or command name.
--- @param root string or nil: A local root dir for a rocks tree. If not given, the default is used.
--- @return (string, string): rock manifest subtree the file comes from ("bin", "lua", or "lib")
--- and path to the providing file relatively to that subtree.
-function manif.get_providing_file(name, version, item_type, item_name, repo)
-   local rocks_dir = path.rocks_dir(repo or cfg.root_dir)
-   local manifest = manif.load_manifest(rocks_dir)
-
-   local entry_table = manifest.repository[name][version][1]
-   local file_path = entry_table[item_type .. "s"][item_name]
-
-   if item_type == "command" then
-      return "bin", file_path
-   end
-
-   -- A module can be in "lua" or "lib". Decide based on extension first:
-   -- most likely Lua modules are in "lua/" and C modules are in "lib/".
-   if file_path:match("%." .. cfg.lua_extension .. "$") then
-      return "lua", file_path
-   elseif file_path:match("%." .. cfg.lib_extension .. "$") then
-      return "lib", file_path
-   end
-
-   -- Fallback to rock manifest scanning.
-   local rock_manifest = manif.load_rock_manifest(name, version, repo and repo.root)
-   local subtree = rock_manifest.lib
-
-   for path_part in file_path:gmatch("[^/]+") do
-      if type(subtree) == "table" then
-         subtree = subtree[path_part]
-      else
-         -- Assume it's in "lua/" if it's not in "lib/".
-         return "lua", file_path
-      end
-   end
-
-   return type(subtree) == "string" and "lib" or "lua", file_path
-end
-
 --- Get all versions of a package listed in a manifest file.
 -- @param name string: a package name.
 -- @param deps_mode string: "one", to use only the currently
@@ -246,7 +192,7 @@ end
 function manif.get_versions(dep, deps_mode)
    assert(type(dep) == "table")
    assert(type(deps_mode) == "string")
-   
+
    local name = dep.name
    local namespace = dep.namespace
 

@@ -9,43 +9,24 @@ local fs = require("luarocks.fs")
 local dir = require("luarocks.dir")
 local deps = require("luarocks.deps")
 local cfg = require("luarocks.core.cfg")
+local vers = require("luarocks.core.vers")
 local repos = require("luarocks.repos")
 local writer = require("luarocks.manif.writer")
+local deplocks = require("luarocks.deplocks")
 
-local opts_mt = {}
-
-opts_mt.__index = opts_mt
-
-function opts_mt.type()
-   return "build.opts"
-end
-
-function build.opts(opts)
-   local valid_opts = {
-      need_to_fetch = "boolean",
-      minimal_mode = "boolean",
-      deps_mode = "string",
-      build_only_deps = "boolean",
-      namespace = "string?",
-      branch = "boolean",
-   }
-   for k, v in pairs(opts) do
-      local tv = type(v)
-      if not valid_opts[k] then
-         error("invalid build option: "..k)
-      end
-      local vo, optional = valid_opts[k]:match("^(.-)(%??)$")
-      if not (tv == vo or (optional == "?" and tv == nil)) then
-         error("invalid type build option: "..k.." - got "..tv..", expected "..vo)
-      end
-   end
-   for k, v in pairs(valid_opts) do
-      if (not v:find("?", 1, true)) and opts[k] == nil then
-         error("missing build option: "..k)
-      end
-   end
-   return setmetatable(opts, opts_mt)
-end
+build.opts = util.opts_table("build.opts", {
+   need_to_fetch = "boolean",
+   minimal_mode = "boolean",
+   deps_mode = "string",
+   build_only_deps = "boolean",
+   namespace = "string?",
+   branch = "string?",
+   verify = "boolean",
+   check_lua_versions = "boolean",
+   pin = "boolean",
+   rebuild = "boolean",
+   no_install = "boolean"
+})
 
 do
    --- Write to the current directory the contents of a table,
@@ -68,6 +49,16 @@ do
    function build.apply_patches(rockspec)
       assert(rockspec:type() == "rockspec")
 
+      if not (rockspec.build.extra_files or rockspec.build.patches) then
+         return true
+      end
+
+      local fd = io.open(fs.absolute_name(".luarocks.patches.applied"), "r")
+      if fd then
+         fd:close()
+         return true
+      end
+
       if rockspec.build.extra_files then
          extract_from_rockspec(rockspec.build.extra_files)
       end
@@ -82,15 +73,17 @@ do
             end
          end
       end
+
+      fd = io.open(fs.absolute_name(".luarocks.patches.applied"), "w")
+      if fd then
+         fd:close()
+      end
       return true
    end
 end
 
 local function check_macosx_deployment_target(rockspec)
    local target = rockspec.build.macosx_deployment_target
-   local function minor(version) 
-      return tonumber(version and version:match("^[^.]+%.([^.]+)"))
-   end
    local function patch_variable(var)
       if rockspec.variables[var]:match("MACOSX_DEPLOYMENT_TARGET") then
          rockspec.variables[var] = (rockspec.variables[var]):gsub("MACOSX_DEPLOYMENT_TARGET=[^ ]*", "MACOSX_DEPLOYMENT_TARGET="..target)
@@ -100,18 +93,18 @@ local function check_macosx_deployment_target(rockspec)
    end
    if cfg.is_platform("macosx") and rockspec:format_is_at_least("3.0") and target then
       local version = util.popen_read("sw_vers -productVersion")
-      local versionminor = minor(version)
-      local targetminor = minor(target)
-      if targetminor > versionminor then
-         return nil, ("This rock requires Mac OSX 10.%d, and you are running 10.%d."):format(targetminor, versionminor)
+      if version:match("^%d+%.%d+%.%d+$") or version:match("^%d+%.%d+$") then
+         if vers.compare_versions(target, version) then
+            return nil, ("This rock requires Mac OSX %s, and you are running %s."):format(target, version)
+         end
       end
-      patch_variable("CC", target)
-      patch_variable("LD", target)
+      patch_variable("CC")
+      patch_variable("LD")
    end
    return true
 end
 
-local function process_dependencies(rockspec, opts)
+local function process_dependencies(rockspec, opts, cwd)
    if not opts.build_only_deps then
       local ok, err, errcode = deps.check_external_deps(rockspec, "build")
       if err then
@@ -119,32 +112,56 @@ local function process_dependencies(rockspec, opts)
       end
    end
 
-   local ok, err, errcode = deps.check_lua(rockspec.variables)
-   if not ok then
-      return nil, err, errcode
-   end
-
    if opts.deps_mode == "none" then
-      util.warning("skipping dependency checks.")
       return true
    end
+
+   local deplock_dir = fs.exists(dir.path(cwd, "luarocks.lock")) and cwd or nil
+
    if not opts.build_only_deps then
       if next(rockspec.build_dependencies) then
-         local ok, err, errcode = deps.fulfill_dependencies(rockspec, "build_dependencies", opts.deps_mode)
+
+         local user_lua_version = cfg.lua_version
+         local running_lua_version = _VERSION:sub(5)
+
+         if running_lua_version ~= user_lua_version then
+            -- Temporarily flip the user-selected Lua version,
+            -- so that we install build dependencies for the
+            -- Lua version on which the LuaRocks program is running.
+
+            -- HACK: we have to do this by flipping a bunch of
+            -- global config settings, and this list may not be complete.
+            cfg.lua_version = running_lua_version
+            cfg.lua_modules_path = cfg.lua_modules_path:gsub(user_lua_version:gsub("%.", "%%."), running_lua_version)
+            cfg.lib_modules_path = cfg.lib_modules_path:gsub(user_lua_version:gsub("%.", "%%."), running_lua_version)
+            cfg.rocks_subdir = cfg.rocks_subdir:gsub(user_lua_version:gsub("%.", "%%."), running_lua_version)
+            path.use_tree(cfg.root_dir)
+         end
+
+         local ok, err, errcode = deps.fulfill_dependencies(rockspec, "build_dependencies", "all", opts.verify, deplock_dir)
+
+         path.add_to_package_paths(cfg.root_dir)
+
+         if running_lua_version ~= user_lua_version then
+            -- flip the settings back
+            cfg.lua_version = user_lua_version
+            cfg.lua_modules_path = cfg.lua_modules_path:gsub(running_lua_version:gsub("%.", "%%."), user_lua_version)
+            cfg.lib_modules_path = cfg.lib_modules_path:gsub(running_lua_version:gsub("%.", "%%."), user_lua_version)
+            cfg.rocks_subdir = cfg.rocks_subdir:gsub(running_lua_version:gsub("%.", "%%."), user_lua_version)
+            path.use_tree(cfg.root_dir)
+         end
+
          if err then
             return nil, err, errcode
          end
       end
    end
-   local ok, err, errcode = deps.fulfill_dependencies(rockspec, "dependencies", opts.deps_mode)
-   if err then
-      return nil, err, errcode
-   end
-   return true
+
+   return deps.fulfill_dependencies(rockspec, "dependencies", opts.deps_mode, opts.verify, deplock_dir)
 end
 
 local function fetch_and_change_to_source_dir(rockspec, opts)
-   if opts.minimal_mode then
+   if opts.minimal_mode or opts.build_only_deps then
       return true
    end
    if opts.need_to_fetch then
@@ -160,8 +177,14 @@ local function fetch_and_change_to_source_dir(rockspec, opts)
       if not ok then
          return nil, err
       end
-   elseif rockspec.source.file then
-      local ok, err = fs.unpack_archive(rockspec.source.file)
+   else
+      if rockspec.source.file then
+         local ok, err = fs.unpack_archive(rockspec.source.file)
+         if not ok then
+            return nil, err
+         end
+      end
+      local ok, err = fetch.find_rockspec_source_dir(rockspec, ".")
       if not ok then
          return nil, err
       end
@@ -188,7 +211,7 @@ local function prepare_install_dirs(name, version)
    return dirs
 end
 
-local function run_build_driver(rockspec)
+local function run_build_driver(rockspec, no_install)
    local btype = rockspec.build.type
    if btype == "none" then
       return true
@@ -206,7 +229,22 @@ local function run_build_driver(rockspec)
    if not pok or type(driver) ~= "table" then
       return nil, "Failed initializing build back-end for build type '"..btype.."': "..driver
    end
-   local ok, err = driver.run(rockspec)
+
+   if not driver.skip_lua_inc_lib_check then
+      local ok, err, errcode = deps.check_lua_incdir(rockspec.variables)
+      if not ok then
+         return nil, err, errcode
+      end
+
+      if cfg.link_lua_explicitly then
+         local ok, err, errcode = deps.check_lua_libdir(rockspec.variables)
+         if not ok then
+            return nil, err, errcode
+         end
+      end
+   end
+
+   local ok, err = driver.run(rockspec, no_install)
    if not ok then
       return nil, "Build error: " .. err
    end
@@ -261,7 +299,7 @@ do
             local ok, err = fs.make_dir(dest)
             if not ok then return nil, err end
          end
-         local ok = fs.copy(dir.path(file), dir.path(dest, filename), perms)
+         local ok = fs.copy(file, dir.path(dest, filename), perms)
          if not ok then
             return nil, "Failed copying "..file
          end
@@ -330,6 +368,11 @@ local function write_rock_dir_files(rockspec, opts)
 
    fs.copy(rockspec.local_abs_filename, path.rockspec_file(name, version), "read")
 
+   local deplock_file = deplocks.get_abs_filename(rockspec.name)
+   if deplock_file then
+      fs.copy(deplock_file, dir.path(path.install_dir(name, version), "luarocks.lock"), "read")
+   end
+
    local ok, err = writer.make_rock_manifest(name, version)
    if not ok then return nil, err end
 
@@ -340,23 +383,17 @@ local function write_rock_dir_files(rockspec, opts)
 end
 
 --- Build and install a rock given a rockspec.
--- @param rockspec_file string: local or remote filename of a rockspec.
--- @param need_to_fetch boolean: true if sources need to be fetched,
--- false if the rockspec was obtained from inside a source rock.
--- @param minimal_mode boolean: true if there's no need to fetch,
--- unpack or change dir (this is used by "luarocks make"). Implies
--- need_to_fetch = false.
--- @param deps_mode string: Dependency mode: "one" for the current default tree,
--- "all" for all trees, "order" for all trees with priority >= the current default,
--- "none" for no trees.
--- @param build_only_deps boolean: true to build the listed dependencies only.
--- @param namespace string?: a namespace for the rockspec
--- @param branch string?: a forced branch to use
+-- @param rockspec rockspec: the rockspec to build
+-- @param opts table: build options table
+-- @param cwd string or nil: The current working directory
 -- @return (string, string) or (nil, string, [string]): Name and version of
 -- installed rock if succeeded or nil and an error message followed by an error code.
-function build.build_rockspec(rockspec, opts)
+function build.build_rockspec(rockspec, opts, cwd)
    assert(rockspec:type() == "rockspec")
    assert(opts:type() == "build.opts")
+   assert(type(cwd) == "string" or type(cwd) == nil)
+
+   cwd = cwd or dir.path(".")
 
    if not rockspec.build then
       if rockspec:format_is_at_least("3.0") then
@@ -376,43 +413,60 @@ function build.build_rockspec(rockspec, opts)
       end
    end
 
-   local ok, err = process_dependencies(rockspec, opts)
+   local ok, err = fetch_and_change_to_source_dir(rockspec, opts)
+   if not ok then return nil, err end
+
+   if opts.pin then
+      deplocks.init(rockspec.name, ".")
+   end
+
+   ok, err = process_dependencies(rockspec, opts, cwd)
    if not ok then return nil, err end
 
    local name, version = rockspec.name, rockspec.version
    if opts.build_only_deps then
+      if opts.pin then
+         deplocks.write_file()
+      end
       return name, version
-   end   
-
-   if repos.is_installed(name, version) then
-      repos.delete_version(name, version, opts.deps_mode)
    end
 
-   ok, err = fetch_and_change_to_source_dir(rockspec, opts)
+   local dirs, err
+   local rollback
+   if not opts.no_install then
+      if repos.is_installed(name, version) then
+         repos.delete_version(name, version, opts.deps_mode)
+      end
+
+      dirs, err = prepare_install_dirs(name, version)
+      if not dirs then return nil, err end
+
+      rollback = util.schedule_function(function()
+         fs.delete(path.install_dir(name, version))
+         fs.remove_dir_if_empty(path.versions_dir(name))
+      end)
+   end
+
+   ok, err = build.apply_patches(rockspec)
    if not ok then return nil, err end
-   
-   local dirs, err = prepare_install_dirs(name, version)
-   if not dirs then return nil, err end
-   
-   local rollback = util.schedule_function(function()
-      fs.delete(path.install_dir(name, version))
-      fs.remove_dir_if_empty(path.versions_dir(name))
-   end)
 
-   if not opts.minimal_mode then
-      local ok, err = build.apply_patches(rockspec)
-      if not ok then return nil, err end
-   end
-   
    ok, err = check_macosx_deployment_target(rockspec)
    if not ok then return nil, err end
-   
-   ok, err = run_build_driver(rockspec)
+
+   ok, err = run_build_driver(rockspec, opts.no_install)
    if not ok then return nil, err end
-   
+
+   if opts.no_install then
+      fs.pop_dir()
+      if opts.need_to_fetch then
+         fs.pop_dir()
+      end
+      return name, version
+   end
+
    ok, err = install_files(rockspec, dirs)
    if not ok then return nil, err end
-   
+
    for _, d in pairs(dirs) do
       fs.remove_dir_if_empty(d.name)
    end
@@ -422,12 +476,16 @@ function build.build_rockspec(rockspec, opts)
       fs.pop_dir()
    end
 
+   if opts.pin then
+      deplocks.write_file()
+   end
+
    ok, err = write_rock_dir_files(rockspec, opts)
    if not ok then return nil, err end
 
    ok, err = repos.deploy_files(name, version, repos.should_wrap_bin_scripts(rockspec), opts.deps_mode)
    if not ok then return nil, err end
-   
+
    util.remove_scheduled_function(rollback)
    rollback = util.schedule_function(function()
       repos.delete_version(name, version, opts.deps_mode)

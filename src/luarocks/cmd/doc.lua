@@ -12,30 +12,34 @@ local fetch = require("luarocks.fetch")
 local fs = require("luarocks.fs")
 local download = require("luarocks.download")
 
-doc.help_summary = "Show documentation for an installed rock."
+function doc.add_to_parser(parser)
+   local cmd = parser:command("doc", "Show documentation for an installed rock.\n\n"..
+      "Without any flags, tries to load the documentation using a series of heuristics.\n"..
+      "With flags, return only the desired information.", util.see_also([[
+   For more information about a rock, see the 'show' command.
+]]))
+      :summary("Show documentation for an installed rock.")
 
-doc.help = [[
-<argument> is an existing package name.
-Without any flags, tries to load the documentation
-using a series of heuristics.
-With these flags, return only the desired information:
+   cmd:argument("rock", "Name of the rock.")
+      :action(util.namespaced_name_action)
+   cmd:argument("version", "Version of the rock.")
+      :args("?")
 
---home      Open the home page of project.
---list      List documentation files only.
+   cmd:flag("--home", "Open the home page of project.")
+   cmd:flag("--list", "List documentation files only.")
+   cmd:flag("--porcelain", "Produce machine-friendly output.")
+end
 
-For more information about a rock, see the 'show' command.
-]]
-
-local function show_homepage(homepage, name, version)
+local function show_homepage(homepage, name, namespace, version)
    if not homepage then
-      return nil, "No 'homepage' field in rockspec for "..name.." "..version
+      return nil, "No 'homepage' field in rockspec for "..util.format_rock_name(name, namespace, version)
    end
    util.printout("Opening "..homepage.." ...")
    fs.browser(homepage)
    return true
 end
 
-local function try_to_open_homepage(name, version)
+local function try_to_open_homepage(name, namespace, version)
    local temp_dir, err = fs.make_temp_dir("doc-"..name.."-"..(version or ""))
    if not temp_dir then
       return nil, "Failed creating temporary directory: "..err
@@ -43,44 +47,37 @@ local function try_to_open_homepage(name, version)
    util.schedule_function(fs.delete, temp_dir)
    local ok, err = fs.change_dir(temp_dir)
    if not ok then return nil, err end
-   local filename, err = download.download("rockspec", name, version)
+   local filename, err = download.download("rockspec", name, namespace, version)
    if not filename then return nil, err end
    local rockspec, err = fetch.load_local_rockspec(filename)
    if not rockspec then return nil, err end
    fs.pop_dir()
    local descript = rockspec.description or {}
-   if not descript.homepage then return nil, "No homepage defined for "..name end
-   return show_homepage(descript.homepage, name, version)
+   return show_homepage(descript.homepage, name, namespace, version)
 end
 
 --- Driver function for "doc" command.
--- @param name or nil: an existing package name.
--- @param version string or nil: a version may also be passed.
 -- @return boolean: True if succeeded, nil on errors.
-function doc.command(flags, name, version)
-   if not name then
-      return nil, "Argument missing. "..util.see_help("doc")
-   end
-
-   name = util.adjust_name_and_namespace(name, flags)
-   local query = queries.new(name, version)
-   local iname, iversion, repo = search.pick_installed_rock(query, flags["tree"])
+function doc.command(args)
+   local query = queries.new(args.rock, args.namespace, args.version)
+   local iname, iversion, repo = search.pick_installed_rock(query, args.tree)
    if not iname then
-      util.printout(name..(version and " "..version or "").." is not installed. Looking for it in the rocks servers...")
-      return try_to_open_homepage(name, version)
+      local rock = util.format_rock_name(args.rock, args.namespace, args.version)
+      util.printout(rock.." is not installed. Looking for it in the rocks servers...")
+      return try_to_open_homepage(args.rock, args.namespace, args.version)
    end
-   name, version = iname, iversion
-   
+   local name, version = iname, iversion
+
    local rockspec, err = fetch.load_local_rockspec(path.rockspec_file(name, version, repo))
    if not rockspec then return nil,err end
    local descript = rockspec.description or {}
 
-   if flags["home"] then
-      return show_homepage(descript.homepage, name, version)
+   if args.home then
+      return show_homepage(descript.homepage, name, args.namespace, version)
    end
 
    local directory = path.install_dir(name, version, repo)
-   
+
    local docdir
    local directories = { "doc", "docs" }
    for _, d in ipairs(directories) do
@@ -91,7 +88,7 @@ function doc.command(flags, name, version)
       end
    end
    if not docdir then
-      if descript.homepage and not flags["list"] then
+      if descript.homepage and not args.list then
          util.printout("Local documentation directory not found -- opening "..descript.homepage.." ...")
          fs.browser(descript.homepage)
          return true
@@ -99,13 +96,13 @@ function doc.command(flags, name, version)
       return nil, "Documentation directory not found for "..name.." "..version
    end
 
-   docdir = dir.normalize(docdir):gsub("/+", "/")
+   docdir = dir.normalize(docdir)
    local files = fs.find(docdir)
    local htmlpatt = "%.html?$"
    local extensions = { htmlpatt, "%.md$", "%.txt$",  "%.textile$", "" }
    local basenames = { "index", "readme", "manual" }
-   
-   local porcelain = flags["porcelain"]
+
+   local porcelain = args.porcelain
    if #files > 0 then
       util.title("Documentation files for "..name.." "..version, porcelain)
       if porcelain then
@@ -119,11 +116,11 @@ function doc.command(flags, name, version)
          end
       end
    end
-   
-   if flags["list"] then
+
+   if args.list then
       return true
    end
-   
+
    for _, extension in ipairs(extensions) do
       for _, basename in ipairs(basenames) do
          local filename = basename..extension
