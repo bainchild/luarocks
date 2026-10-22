@@ -285,8 +285,8 @@ local function collect_rockspecs(versions, paths, unnamed_paths, subdir)
    local path = require("luarocks.path")
    local vers = require("luarocks.core.vers")
    if fs.is_dir(subdir) then
-      for file in fs.dir(subdir) do
-         local file = dir.path(subdir, file)
+      for filename in fs.dir(subdir) do
+         local file = dir.path(subdir, filename)
 
          if file:match("rockspec$") and fs.is_file(file) then
             local rock, version = path.parse_name(file)
@@ -363,9 +363,9 @@ function util.split_namespace(ns_name)
    if p1 then
       return p2, p1
    else
-      p1,p2 = ns_name:match("(https?://.*)/([^/]+)$")
+      p1, p2 = ns_name:match("(https?://.*)/([^/]+)$")
       if p1 then return p2, p1 end
-      p1,p2 = ns_name:match("(file://.*)/([^/]+)$")
+      p1, p2 = ns_name:match("(file://.*)/([^/]+)$")
       if p1 then return p2, p1 end
    end
    return ns_name

@@ -228,23 +228,40 @@ end
 -- and an error code.
 function search.find_suitable_rock(query: Query): string, string, string
 
-   local rocks_provided = util.get_rocks_provided()
-
-   if rocks_provided[query.name] then
-      -- Do not install versions listed in rocks_provided.
-      return nil, "Rock "..query.name.." "..rocks_provided[query.name]..
-         " is already provided by VM or via 'rocks_provided' in the config file.", "provided"
-   end
-
-   local result_tree = search.search_repos(query)
-   local first_rock = next(result_tree)
-   if not first_rock then
-      return nil, "No results matching query were found for Lua " .. cfg.lua_version .. ".", "notfound"
-   elseif next(result_tree, first_rock) then
-      -- Shouldn't happen as query must match only one package.
-      return nil, "Several rocks matched query.", "manyfound"
+   -- This is a URL to a rock or rockspec, download it directly.
+   if query.url then
+      local protocol, location = dir.split_url( query.url )
+      if protocol == "http" or protocol == "https" or protocol == "file" then
+         local extension = location:match("%.([^.]+)$")
+         if extension == "rock" or extension == "rockspec" then
+            return query.url
+         else
+            -- This path should be impossible as we check for this earlier
+            return nil, "Rock specified as url points to unsupported file format" .. (extension and (" \"" .. extension .. "\".") or ".")
+         end
+         --TODO: file://, git://
+      else
+         return nil, "Rock specified as url has unsupported protocol \"" .. protocol .."\"."
+      end
    else
-      return pick_latest_version(query.name, result_tree[first_rock])
+      local rocks_provided = util.get_rocks_provided()
+
+      if rocks_provided[query.name] then
+         -- Do not install versions listed in rocks_provided.
+         return nil, "Rock "..query.name.." "..rocks_provided[query.name]..
+            " is already provided by VM or via 'rocks_provided' in the config file.", "provided"
+      end
+
+      local result_tree = search.search_repos(query)
+      local first_rock = next(result_tree)
+      if not first_rock then
+         return nil, "No results matching query were found for Lua " .. cfg.lua_version .. ".", "notfound"
+      elseif next(result_tree, first_rock) then
+         -- Shouldn't happen as query must match only one package.
+         return nil, "Several rocks matched query.", "manyfound"
+      else
+         return pick_latest_version(query.name, result_tree[first_rock])
+      end
    end
 end
 

@@ -25,23 +25,11 @@ type_rockspec.rockspec_format = "3.1"
 
 
 
--- Syntax for type-checking tables:
---
--- A type-checking table describes typing data for a value.
--- Any key starting with an underscore has a special meaning:
--- _type (string) is the Lua type of the value. Default is "table".
--- _mandatory (boolean) indicates if the value is a mandatory key in its container table. Default is false.
--- For "string" types only:
---    _pattern (string) is the string-matching pattern, valid for string types only. Default is ".*".
---             (table) may be a list of string-matching patterns. If any string matches, the pattern matches.
--- For "table" types only:
---    _any (table) is the type-checking table for unspecified keys, recursively checked.
---    _more (boolean) indicates that the table accepts unspecified keys and does not type-check them.
---    Any other string keys that don't start with an underscore represent known keys and are type-checking tables, recursively checked.
+
 
 local dependency_pattern_3_0 = {
-   "%s*([a-zA-Z0-9%.%-%_]*/?[a-zA-Z0-9][a-zA-Z0-9%.%-%_]*)%s*([^/]*)", -- namespace/package
-   "%s*([^:]*://%S*)%s*(.*)"                                           -- direct URL
+   "%s*([a-zA-Z0-9%.%-%_]*/?[a-zA-Z0-9][a-zA-Z0-9%.%-%_]*)%s*([^/]*)",
+   "%s*([^:]*://%S*)%s*(.*)",
 }
 
 local rockspec_formats, versions = type_check.declare_schemas({
@@ -159,7 +147,6 @@ local rockspec_formats, versions = type_check.declare_schemas({
             _any = {
                _pattern = dependency_pattern_3_0,
             },
-            issues_url = { _type = "string" },
          },
          build_dependencies = {
             fields = {

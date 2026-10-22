@@ -169,8 +169,8 @@ function tar.untar(filename, destdir)
       end
       local pathname = fs.absolute_name(dir.path(destdir, header.name))
       if not fs.is_within(base_dir, pathname) then
-         tar_handle:close()
-         return nil, "archive entry escapes the destination directory: " .. header.name
+         ok, err = nil, "archive entry escapes the destination directory: " .. header.name
+         break
       end
       if header.typeflag == "directory" then
          ok, err = make_dir(pathname)

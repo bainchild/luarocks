@@ -7,6 +7,7 @@ local record query
         constraints: {Constraint}
         substring: boolean
         arch: {string: boolean}
+        url: string | nil
      end
 end
 

@@ -6,7 +6,7 @@ local record type_check
       fields: {string: TableSchema}
       _type: string
       _name: string
-      _pattern: string
+      _pattern: string | {string}
       _version: string
       _more: boolean
       _mandatory: boolean
@@ -134,8 +134,21 @@ local function type_check_item(version: string, item: any, typetbl: TableSchema,
       end
       local pattern = typetbl._pattern
       if pattern then
-         if not item:match("^"..pattern.."$") then
-            local what = typetbl._name or ("'"..pattern.."'")
+         local match = false
+         for _,patternString in ipairs(pattern is string and {pattern} or pattern) do
+            if item:match("^"..patternString.."$") then
+               match = true
+               break
+            end
+         end
+         if not match then
+            local what = typetbl._name
+            if not what then
+               for _,patternString in ipairs(pattern is string and {pattern} or pattern) do
+                  what = what and (what..", ") or ""
+                  what = what.."'"..patternString.."'"
+               end
+            end
             return nil, "Type mismatch on field "..context..": invalid value '"..item.."' does not match " .. what
          end
       end

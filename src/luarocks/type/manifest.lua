@@ -21,7 +21,8 @@ local manifest_formats = type_check.declare_schemas({
                         modules = { _any = { _type = "string" } },
                         commands = { _any = { _type = "string" } },
                         dependencies = { _any = { _type = "string" } },
-                        url = { _type = "string" }
+                        url = { _type = "string" },
+
                      },
                   },
                },
@@ -67,7 +68,7 @@ local manifest_formats = type_check.declare_schemas({
                               },
                            },
                         },
-                        url = { _type = "string" }
+                        url = { _type = "string" },
                      },
                   },
                },

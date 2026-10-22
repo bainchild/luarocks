@@ -5,6 +5,7 @@ end
 local vers = require("luarocks.core.vers")
 local util = require("luarocks.util")
 local cfg = require("luarocks.core.cfg")
+local path = require("luarocks.path")
 
 local query = require("luarocks.core.types.query")
 local type Query = query.Query
@@ -148,7 +149,12 @@ do
    -- @return table: A query in table format, or nil and an error message in case of errors.
    function queries.from_dep_string(depstr: string): Query, string
 
-      local ns_name, rest = depstr:match("^%s*([a-zA-Z0-9%.%-%_]*/?[a-zA-Z0-9][a-zA-Z0-9%.%-%_]*)%s*([^/]*)")
+      local is_url = true
+      local ns_name, rest = depstr:match("^%s*([^:]*://%S*)%s*(.*)$")
+      if not ns_name then
+         is_url = false
+         ns_name, rest = depstr:match("^%s*([a-zA-Z0-9%.%-%_]*/?[a-zA-Z0-9][a-zA-Z0-9%.%-%_]*)%s*([^/]*)")
+      end
       if not ns_name then
          return nil, "failed to extract dependency name from '"..depstr.."'"
       end
@@ -160,12 +166,25 @@ do
          return nil, err
       end
 
-      local name, namespace = util.split_namespace(ns_name)
+      local name: string
+      local namespace: string
+      local url: string | nil
+      if is_url then
+         name = path.parse_name(ns_name)
+         if not name then
+            return nil, "failed to extract package name from url '"..ns_name.."'; does the URL point to a rock or rockspec file?"
+         end
+         url = ns_name
+         namespace = ns_name:match("^(%S*)/[^/]*$")
+      else
+         name, namespace = util.split_namespace(ns_name)
+      end
 
       local self = {
          name = name,
          namespace = namespace,
          constraints = constraints,
+         url = url
       }
 
       query.Query.arch[cfg.arch] = true

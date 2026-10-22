@@ -134,12 +134,9 @@ local function type_check_item(version, item, typetbl, context)
       end
       local pattern = typetbl._pattern
       if pattern then
-         if type(pattern) == "string" then
-            pattern = {pattern}
-         end
          local match = false
-         for _,patternString in ipairs(pattern) do
-            if item:match("^"..patternString.."$") then
+         for _, patternString in ipairs(type(pattern) == "string" and { pattern } or pattern) do
+            if item:match("^" .. patternString .. "$") then
                match = true
                break
             end
@@ -147,12 +144,12 @@ local function type_check_item(version, item, typetbl, context)
          if not match then
             local what = typetbl._name
             if not what then
-               for _,patternString in ipairs(pattern) do
+               for _, patternString in ipairs(type(pattern) == "string" and { pattern } or pattern) do
                   what = what and (what .. ", ") or ""
-                  what = what .. "'"..patternString.."'"
+                  what = what .. "'" .. patternString .. "'"
                end
             end
-            return nil, "Type mismatch on field "..context..": invalid value '"..item.."' does not match " .. what
+            return nil, "Type mismatch on field " .. context .. ": invalid value '" .. item .. "' does not match " .. what
          end
       end
    elseif expected_type == "table" then
